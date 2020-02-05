@@ -1,0 +1,199 @@
+#!/bin/bash
+#----------------------------------------
+# Copyright © Megan Hoover
+# 1/8/2020
+# PhD student at Clemson University
+# This script runs the job, creates data files, and creates plots.
+#----------------------------------------
+#PBS -N jobname
+#PBS -l select=1:ncpus=4:mpiprocs=4:ngpus=2:mem=32gb:gpu_model=p100
+#PBS -l walltime=07:00:00
+#PBS -j oe
+#PBS -r n
+#PBS -m abe
+#PBS -M your email
+
+# Set up the runtime envirionments. This will be unique to your enviroment. The way I load VASP will not be the same way you load the program.
+ulimit -s unlimited
+module load use.own
+module load vasp/5.4.4
+
+# Prepare the input. All my jobs are set-up in my home directory.
+cd $PBS_O_WORKDIR
+SUBDIR="where I run my jobs, in the scratch folder."
+echo $SUBDIR
+mkdir -p $SUBDIR
+cp * $SUBDIR
+
+COMDIR="where I save all my files, in a backup folder."
+echo $COMDIR
+mkdir -p $COMDIR
+
+cd $SUBDIR
+
+cp INCAR_GO INCAR
+
+# Loop to resubmit calculations
+for (( n=1; n <= 10 ; n++ )); do
+  cp POSCAR POSCAR_$n
+
+  # Run the processers
+  mpirun -n 4 vasp_gpu_ncl > output
+
+  cp CONTCAR CONTCAR_$n
+  cp CONTCAR POSCAR
+  cp OSZICAR OSZICAR.$n
+  cp OUTCAR OUTCAR.$n
+  cp CHGCAR CHGCAR_$n
+  cp INCAR INCAR_$n
+
+  # Edit INCAR file such that it re-runs the calcualtion using the CHGCAR file
+  # If you want to re-run using the WAVECAR then use '6s/2/0/1'
+  # line/old/new/number of instances
+  sed -i '5s/0/1/' INCAR
+  sed -i '6s/2/0/' INCAR
+
+  # Extract the magnetization from OUTCAR file for noncollinear calculations.
+  parseX=$(cat OUTCAR.${n} | tail -n87 | head -n4 > xtmp.txt)
+  parseY=$(cat OUTCAR.${n} | tail -n65 | head -n4 > ytmp.txt)
+  parseZ=$(cat OUTCAR.${n} | tail -n43 | head -n4 > ztmp.txt)
+
+  # Print the magnetization for the f orbitals into temp files
+  magnetizx=$(awk '{printf "%s ",$6}' xtmp.txt)
+  magnetizy=$(awk '{printf "%s ",$6}' ytmp.txt)
+  magnetizz=$(awk '{printf "%s ",$6}' ztmp.txt)
+
+  # Output is written as X1 X2 X3 X4, Y1 Y2 Y3 Y4, Z1 Z2 Z3 Z4 into Ufchgtemp.txt
+  echo -e "$magnetizx, $magnetizy, $magnetizz" >> Ufchgtemp.txt
+
+  # Assign variables to reorder data
+  a1_x1=$(awk 'FNR == '$n' {print $1}' Ufchgtemp.txt)
+  a2_x2=$(awk 'FNR == '$n' {print $2}' Ufchgtemp.txt)
+  a3_x3=$(awk 'FNR == '$n' {print $3}' Ufchgtemp.txt)
+  a4_x4=$(awk 'FNR == '$n' {print $4}' Ufchgtemp.txt)
+  a1_y1=$(awk 'FNR == '$n' {print $6}' Ufchgtemp.txt)
+  a2_y2=$(awk 'FNR == '$n' {print $7}' Ufchgtemp.txt)
+  a3_y3=$(awk 'FNR == '$n' {print $8}' Ufchgtemp.txt)
+  a4_y4=$(awk 'FNR == '$n' {print $9}' Ufchgtemp.txt)
+  a1_z1=$(awk 'FNR == '$n' {print $11}' Ufchgtemp.txt)
+  a2_z2=$(awk 'FNR == '$n' {print $12}' Ufchgtemp.txt)
+  a3_z3=$(awk 'FNR == '$n' {print $13}' Ufchgtemp.txt)
+  a4_z4=$(awk 'FNR == '$n' {print $14}' Ufchgtemp.txt)
+
+  # Need to force 3 spaces between each of the atom positions
+  MyCustomTab='   '
+
+  # Declare the new AtomPosition array
+  declare -a AtomPosition=("$a1_x1" "$a1_y1" "$a1_z1""$MyCustomTab""$a2_x2" "$a2_y2" "$a2_z2""$MyCustomTab""$a3_x3" "$a3_y3" "$a3_z3""$MyCustomTab""$a4_x4" "$a4_y4" "$a4_z4")
+
+  # Output written as X1 Y1 Z1   X2 Y2 Z2   X3 Y3 Z3   X4 Y4 Z4
+  echo "${AtomPosition[*]}" >> Ufchg.txt
+
+  # Oxygen positions that'll be needed in the NewMAGMOM line
+  OxygenPosition='0 0 0'
+
+  # New magnetization that'll be used to replace the MAGMOM line in the INCAR
+  declare -a NewMAGMOM=("$a1_x1" "$a1_y1" "$a1_z1""$MyCustomTab""$a2_x2" "$a2_y2" "$a2_z2""$MyCustomTab""$a3_x3" "$a3_y3" "$a3_z3""$MyCustomTab""$a4_x4" "$a4_y4" "$a4_z4""$MyCustomTab""$OxygenPosition""$MyCustomTab""$OxygenPosition""$MyCustomTab""$OxygenPosition""$MyCustomTab""$OxygenPosition""$MyCustomTab""$OxygenPosition""$MyCustomTab""$OxygenPosition""$MyCustomTab""$OxygenPosition""$MyCustomTab""$OxygenPosition")
+
+  # Remove the old MAGMOM line and add the new MAGMOM line
+  sed -i '30d' INCAR
+  sed -i "30i \ MAGMOM = ${NewMAGMOM[*]}" INCAR
+
+  # Print band gap using the bandgap.pl script from VTST-UT Chem to bandgap.txt file
+  bandgap.pl | tail -n2 | head -n1 | awk '{print $8}' >> bandgap.txt
+
+  # Print HOMO and LUMO bands using HOMO_LUMO.sh file
+  # How do I add a new line after it prints everything???
+  # HOMO_LUMO.sh OUTCAR.$n | awk '{print $0; print ""; }' >> HOMO_LUMO.txt
+
+  # Print energy from OZICAR to E0_data.txt file
+  cat OSZICAR | tail -n2 | head -n1 | awk '{print $3}' >> E0_data.txt
+
+  # Print the final lattice constants from CONTCAR to LC.txt file
+  a=$(awk 'FNR == 3 {print $1}' CONTCAR_$n)
+  b=$(awk 'FNR == 4 {print $2}' CONTCAR_$n)
+  c=$(awk 'FNR == 5 {print $3}' CONTCAR_$n)
+  declare -a LCarray=("$a" "$b" "$c")
+  echo "${LCarray[*]}" >> LC.txt
+
+  cp * $COMDIR
+
+  # Convert scientific notation to a floating point number & subtract the two energy values
+  LN=$(tail -n1 E0_data.txt)
+  SLN=$(tail -n2 E0_data.txt | head -n1)
+  num_LN=$(printf "%.12f" $LN)
+  num_SLN=$(printf "%.12f" $SLN)
+  diff_LN_SLN=$(echo "$num_LN - $num_SLN" | bc -l )
+  abs_diff_LN_SLN=${diff_LN_SLN#-}
+  converg_criteria=0.000010
+
+  # Because the condition here is x - y >= z, it will return 1 if true and 0 if false
+  # This should get you a more accurate comparison to this float but "bc" is better than -le -lt -ge -gt
+  # https://ss64.com/bash/bc.html
+  if (( $(echo "$abs_diff_LN_SLN <= $converg_criteria" | bc -l) )); then
+    echo -e "Ready to run single-point energy calculations" >> convergence_energy.txt
+    cp INCAR_SPE INCAR
+    sed -i '30d' INCAR
+    sed -i "30i \ MAGMOM = ${NewMAGMOM[*]}" INCAR
+    exit
+  else
+    echo -e "$abs_diff_LN_SLN" >> convergence_energy.txt
+  fi
+done
+  # If the two energy values are less than or equal to 0.00001, then run the single-point energy calculation
+#  if [ "$abs_diff_LN_SLN" -le "$converg_criteria" ];then
+#    echo -e "Running single-point energy calculations" >> convergence_energy.txt
+#    cp INCAR_SPE INCAR
+#    sed -i '30d' INCAR
+#    sed -i "30i \ MAGMOM = ${NewMAGMOM[*]}" INCAR
+#    exit
+#  else
+#    echo -e "$abs_diff_LN_SLN" >> convergence_energy.txt
+#  fi
+#done
+
+# Run the processers
+#mpirun -n 4 vasp_gpu_ncl > outputspe
+
+# Print band gap using the bandgap.pl script from VTST-UT Chem to bandgap.txt file
+#bandgap.pl | tail -n2 | head -n1 | awk '{print $8}' >> bandgap.txt
+
+# Print energy from OZICAR to E0_data.txt file
+#tail -n1 OSZICAR | awk '{print $5}' >> E0_data.txt
+
+#parseX=$(cat OUTCAR | tail -n87 | head -n4 > xtmp.txt)
+#parseY=$(cat OUTCAR | tail -n65 | head -n4 > ytmp.txt)
+#parseZ=$(cat OUTCAR | tail -n43 | head -n4 > ztmp.txt)
+
+# Print the magnetization for the f orbitals into temp files
+#magnetizx=$(awk '{printf "%s ",$6}' xtmp.txt)
+#magnetizy=$(awk '{printf "%s ",$6}' ytmp.txt)
+#magnetizz=$(awk '{printf "%s ",$6}' ztmp.txt)
+
+# Output is written as X1 X2 X3 X4, Y1 Y2 Y3 Y4, Z1 Z2 Z3 Z4 into Ufchgtemp.txt
+#echo -e "$magnetizx, $magnetizy, $magnetizz" >> Ufchgtemp.txt
+
+# Assign variables to reorder data
+#a1_x1=$(awk 'FNR == '$n' {print $1}' Ufchgtemp.txt)
+#a2_x2=$(awk 'FNR == '$n' {print $2}' Ufchgtemp.txt)
+#a3_x3=$(awk 'FNR == '$n' {print $3}' Ufchgtemp.txt)
+#a4_x4=$(awk 'FNR == '$n' {print $4}' Ufchgtemp.txt)
+#a1_y1=$(awk 'FNR == '$n' {print $6}' Ufchgtemp.txt)
+#a2_y2=$(awk 'FNR == '$n' {print $7}' Ufchgtemp.txt)
+#a3_y3=$(awk 'FNR == '$n' {print $8}' Ufchgtemp.txt)
+#a4_y4=$(awk 'FNR == '$n' {print $9}' Ufchgtemp.txt)
+#a1_z1=$(awk 'FNR == '$n' {print $11}' Ufchgtemp.txt)
+#a2_z2=$(awk 'FNR == '$n' {print $12}' Ufchgtemp.txt)
+#a3_z3=$(awk 'FNR == '$n' {print $13}' Ufchgtemp.txt)
+#a4_z4=$(awk 'FNR == '$n' {print $14}' Ufchgtemp.txt)
+
+# Need to force 3 spaces between each of the atom positions
+#MyCustomTab='   '
+
+# Declare the new AtomPosition array
+#declare -a AtomPosition=("$a1_x1" "$a1_y1" "$a1_z1""$MyCustomTab""$a2_x2" "$a2_y2" "$a2_z2""$MyCustomTab""$a3_x3" "$a3_y3" "$a3_z3""$MyCustomTab""$a4_x4" "$a4_y4" "$a4_z4")
+
+# Output written as X1 Y1 Z1   X2 Y2 Z2   X3 Y3 Z3   X4 Y4 Z4
+#echo "${AtomPosition[*]}" >> Ufchg.txt
+
+#cp * $COMDIR
