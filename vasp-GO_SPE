@@ -11,21 +11,21 @@
 #PBS -j oe
 #PBS -r n
 #PBS -m abe
-#PBS -M mel2@clemson.edu
+#PBS -M your email
 
-# Set up the runtime envirionments
+# Set up the runtime envirionments. This is unique to my set-up. Yours will be different.
 ulimit -s unlimited
 module load use.own
 module load vasp/5.4.4
 
 # Prepare the input
 cd $PBS_O_WORKDIR
-SUBDIR="/scratch3/$USER/longitudinal/jobname"
+SUBDIR="pathway to scratch folder"
 echo $SUBDIR
 mkdir -p $SUBDIR
 cp * $SUBDIR
 
-COMDIR="/common1/nuclides/mel2/Noncollinear/longitudinal/jobname"
+COMDIR="pathway to backup folder where my files are saved"
 echo $COMDIR
 mkdir -p $COMDIR
 
@@ -53,7 +53,7 @@ for (( n=1; n <= 10 ; n++ )); do
   sed -i '5s/0/1/' INCAR
   sed -i '6s/2/0/' INCAR
 
-  # Extract the magnetization from OUTCAR file
+  # Extract the magnetization from OUTCAR file (for noncollinear calculation)
   parseX=$(cat OUTCAR.${n} | tail -n87 | head -n4 > xtmp.txt)
   parseY=$(cat OUTCAR.${n} | tail -n65 | head -n4 > ytmp.txt)
   parseZ=$(cat OUTCAR.${n} | tail -n43 | head -n4 > ztmp.txt)
